@@ -2,7 +2,7 @@
 <package format="2">
   <name>rosbag_mapper</name>
   <version>0.0.1</version>
-  <description>A node that reads a rosbag and sends all data to the norlab_icp_mapper library.</description>
+  <description>Program that reads a rosbag and sends all data to the norlab_icp_mapper library.</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->
   <!-- Example:  -->
