@@ -40,40 +40,10 @@ bool computeProbDynamic = false;
 bool isMapping = true;
 
 std::shared_ptr<PM::Transformation> transformation;
-tf2_ros::Buffer tfBuffer(ros::DURATION_MAX);
+std::unique_ptr<tf2_ros::Buffer> tfBuffer;
 std::unique_ptr<norlab_icp_mapper::Mapper> mapper;
 std::unique_ptr<Trajectory> trajectory;
 PM::TransformationParameters odomToMap;
-
-PM::TransformationParameters findTransform(std::string sourceFrame, std::string targetFrame, ros::Time time, int transformDimension)
-{
-	geometry_msgs::TransformStamped tf = tfBuffer.lookupTransform(targetFrame, sourceFrame, time);
-	return PointMatcher_ROS::rosTfToPointMatcherTransformation<T>(tf, transformDimension);
-}
-
-void gotInput(PM::DataPoints input, ros::Time timeStamp)
-{
-	try
-	{
-		PM::TransformationParameters sensorToOdom = findTransform(sensorFrame, odomFrame, timeStamp, input.getHomogeneousDim());
-		PM::TransformationParameters sensorToMapBeforeUpdate = odomToMap * sensorToOdom;
-		
-		mapper->processInput(input, sensorToMapBeforeUpdate, std::chrono::time_point<std::chrono::steady_clock>(std::chrono::nanoseconds(timeStamp.toNSec())));
-		const PM::TransformationParameters& sensorToMapAfterUpdate = mapper->getSensorPose();
-		
-		odomToMap = transformation->correctParameters(sensorToMapAfterUpdate * sensorToOdom.inverse());
-		
-		PM::TransformationParameters robotToSensor = findTransform(robotFrame, sensorFrame, timeStamp, input.getHomogeneousDim());
-		PM::TransformationParameters robotToMap = sensorToMapAfterUpdate * robotToSensor;
-		
-		trajectory->addPoint(robotToMap.topRightCorner(input.getEuclideanDim(), 1));
-	}
-	catch(tf2::TransformException& ex)
-	{
-		std::cerr << ex.what() << std::endl;
-		return;
-	}
-}
 
 void parseConfig()
 {
@@ -210,41 +180,13 @@ void parseConfig()
 	}
 }
 
-int main(int argc, char** argv)
+void populateTfBuffer(const rosbag::Bag& bag, ros::Time& earliestStamp, ros::Time& latestStamp)
 {
-	if(argc < 2)
-	{
-		std::cerr << "No bag path specified in program arguments, exiting..." << std::endl;
-		return 1;
-	}
-	
-	std::string bagPath = argv[1];
-	
-	parseConfig();
-	
-	transformation = PM::get().TransformationRegistrar.create("RigidTransformation");
-	
-	mapper = std::unique_ptr<norlab_icp_mapper::Mapper>(new norlab_icp_mapper::Mapper(icpConfig, inputFiltersConfig, mapPostFiltersConfig, mapUpdateCondition,
-																					  mapUpdateOverlap, mapUpdateDelay, mapUpdateDistance, minDistNewPoint,
-																					  sensorMaxRange, priorDynamic, thresholdDynamic, beamHalfAngle, epsilonA,
-																					  epsilonD, alpha, beta, is3D, false, computeProbDynamic,
-																					  isMapping));
-	int euclideanDimension = 2;
-	if(is3D)
-	{
-		euclideanDimension = 3;
-	}
-	trajectory = std::unique_ptr<Trajectory>(new Trajectory(euclideanDimension));
-	odomToMap = PM::TransformationParameters::Identity(euclideanDimension + 1, euclideanDimension + 1);
-	
-	rosbag::Bag bag;
-	bag.open(bagPath);
-
 	std::vector<std::string> topics = { "/tf_static", "/tf" };
 	rosbag::View view(bag, rosbag::TopicQuery(topics));
 	
-	ros::Time earliestStamp(ros::TIME_MAX);
-	ros::Time latestStamp(ros::TIME_MIN);
+	earliestStamp = ros::TIME_MAX;
+	latestStamp = ros::TIME_MIN;
 	for(rosbag::MessageInstance const message: view)
 	{
 		tf2_msgs::TFMessage::ConstPtr tfs = message.instantiate<tf2_msgs::TFMessage>();
@@ -252,7 +194,7 @@ int main(int argc, char** argv)
 		{
 			for(const geometry_msgs::TransformStamped& tf : tfs->transforms)
 			{
-				tfBuffer.setTransform(tf, "default_authority", message.getTopic() == "/tf_static");
+				tfBuffer->setTransform(tf, "default_authority", message.getTopic() == "/tf_static");
 				
 				if(tf.header.stamp < earliestStamp)
 				{
@@ -266,27 +208,95 @@ int main(int argc, char** argv)
 			}
 		}
 	}
-	ros::Duration bagDuration = latestStamp - earliestStamp;
+}
+
+PM::TransformationParameters findTransform(std::string sourceFrame, std::string targetFrame, ros::Time time, int transformDimension)
+{
+	geometry_msgs::TransformStamped tf = tfBuffer->lookupTransform(targetFrame, sourceFrame, time);
+	return PointMatcher_ROS::rosTfToPointMatcherTransformation<T>(tf, transformDimension);
+}
+
+void gotInput(PM::DataPoints input, ros::Time timeStamp)
+{
+	try
+	{
+		PM::TransformationParameters sensorToOdom = findTransform(sensorFrame, odomFrame, timeStamp, input.getHomogeneousDim());
+		PM::TransformationParameters sensorToMapBeforeUpdate = odomToMap * sensorToOdom;
+		
+		mapper->processInput(input, sensorToMapBeforeUpdate, std::chrono::time_point<std::chrono::steady_clock>(std::chrono::nanoseconds(timeStamp.toNSec())));
+		const PM::TransformationParameters& sensorToMapAfterUpdate = mapper->getSensorPose();
+		
+		odomToMap = transformation->correctParameters(sensorToMapAfterUpdate * sensorToOdom.inverse());
+		
+		PM::TransformationParameters robotToSensor = findTransform(robotFrame, sensorFrame, timeStamp, input.getHomogeneousDim());
+		PM::TransformationParameters robotToMap = sensorToMapAfterUpdate * robotToSensor;
+		
+		trajectory->addPoint(robotToMap.topRightCorner(input.getEuclideanDim(), 1));
+	}
+	catch(tf2::TransformException& ex)
+	{
+		std::cerr << ex.what() << std::endl;
+		return;
+	}
+}
+
+void processBag(const std::string& bagPath)
+{
+	rosbag::Bag bag;
+	bag.open(bagPath);
+	
+	ros::Time earliestStamp, latestStamp;
+	populateTfBuffer(bag, earliestStamp, latestStamp);
 	
 	for(rosbag::MessageInstance const message: rosbag::View(bag, rosbag::TopicQuery(pointsIn)))
 	{
 		sensor_msgs::PointCloud2::ConstPtr cloudMsgIn = message.instantiate<sensor_msgs::PointCloud2>();
 		if(cloudMsgIn != nullptr)
 		{
-			std::cout << std::to_string((double)((message.getTime() - earliestStamp).toNSec()) / bagDuration.toNSec() * 100) + "%" << std::endl;
-
+			std::cout << std::to_string((double)((cloudMsgIn->header.stamp - earliestStamp).toNSec()) / (latestStamp - earliestStamp).toNSec() * 100) + "%"
+					  << std::endl;
 			gotInput(PointMatcher_ROS::rosMsgToPointMatcherCloud<T>(*cloudMsgIn), cloudMsgIn->header.stamp);
 		}
 		
 		sensor_msgs::LaserScan::ConstPtr scanMsgIn = message.instantiate<sensor_msgs::LaserScan>();
 		if(scanMsgIn != nullptr)
 		{
-			std::cout << std::to_string((double)((message.getTime() - earliestStamp).toNSec()) / bagDuration.toNSec() * 100) + "%" << std::endl;
+			std::cout << std::to_string((double)((scanMsgIn->header.stamp - earliestStamp).toNSec()) / (latestStamp - earliestStamp).toNSec() * 100) + "%"
+					  << std::endl;
 			gotInput(PointMatcher_ROS::rosMsgToPointMatcherCloud<T>(*scanMsgIn), scanMsgIn->header.stamp);
 		}
 	}
 	
 	bag.close();
+}
+
+int main(int argc, char** argv)
+{
+	if(argc < 2)
+	{
+		std::cerr << "No bag path specified in program arguments, exiting..." << std::endl;
+		return 1;
+	}
+	std::string bagPath = argv[1];
+	
+	parseConfig();
+	
+	transformation = PM::get().TransformationRegistrar.create("RigidTransformation");
+	tfBuffer = std::unique_ptr<tf2_ros::Buffer>(new tf2_ros::Buffer(ros::DURATION_MAX));
+	mapper = std::unique_ptr<norlab_icp_mapper::Mapper>(new norlab_icp_mapper::Mapper(icpConfig, inputFiltersConfig, mapPostFiltersConfig, mapUpdateCondition,
+																					  mapUpdateOverlap, mapUpdateDelay, mapUpdateDistance, minDistNewPoint,
+																					  sensorMaxRange, priorDynamic, thresholdDynamic, beamHalfAngle, epsilonA,
+																					  epsilonD, alpha, beta, is3D, false, computeProbDynamic,
+																					  isMapping));
+	int euclideanDimension = 2;
+	if(is3D)
+	{
+		euclideanDimension = 3;
+	}
+	trajectory = std::unique_ptr<Trajectory>(new Trajectory(euclideanDimension));
+	odomToMap = PM::TransformationParameters::Identity(euclideanDimension + 1, euclideanDimension + 1);
+	
+	processBag(bagPath);
 	
 	mapper->getMap().save(finalMapName);
 	trajectory->save(finalTrajectoryName);
