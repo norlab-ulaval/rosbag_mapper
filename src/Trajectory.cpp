@@ -2,7 +2,7 @@
 #include <pointmatcher/PointMatcher.h>
 
 Trajectory::Trajectory(int dimension):
-	dimension(dimension)
+		dimension(dimension)
 {
 }
 

@@ -142,7 +142,7 @@ include_directories(
 ## Declare a C++ executable
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
-add_executable(rosbag_mapper_node src/main.cpp src/Trajectory.cpp)
+add_executable(rosbag_mapper src/main.cpp src/Trajectory.cpp src/MapperParameters.cpp)
 
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
@@ -155,7 +155,7 @@ add_executable(rosbag_mapper_node src/main.cpp src/Trajectory.cpp)
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 ## Specify libraries to link a library or executable target against
-target_link_libraries(rosbag_mapper_node
+target_link_libraries(rosbag_mapper
   ${catkin_LIBRARIES}
   ${norlab_icp_mapper_LIBRARIES}
 )
